@@ -6,9 +6,9 @@ dependencies:
 - matplotlib=2.0.2
 - numpy=1.12
 - python=3.5.4
-- pysynphot=0.9.8.7
 - scipy=0.19.1
 - specutils=0.2.2
 - pip:
   - peakutils==1.0.3
+  - "git+https://github.com/gbrammer/eazy-py.git"
 

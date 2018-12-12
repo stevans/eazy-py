@@ -3,6 +3,14 @@ import os
 
 __all__ = ["FilterDefinition", "FilterFile", "ParamFilter"]
 
+from astropy.table import Table
+from . import utils
+
+VEGA_FILE = os.path.join(utils.path_to_eazy_data(),
+                         'alpha_lyr_stis_008.fits')
+                         
+VEGA = Table.read(VEGA_FILE)
+
 class FilterDefinition:
     def __init__(self, name=None, wave=None, throughput=None, bp=None, EBV=0, Rv=3.1):
         """
@@ -26,19 +34,21 @@ class FilterDefinition:
             self.norm = np.trapz(self.throughput/self.wave, self.wave)
         
     def get_extinction(self, EBV=0, Rv=3.1):
+        import astropy.units as u
         try:
             import specutils.extinction
-            import astropy.units as u
             HAS_SPECUTILS = True
         except:
+            from extinction import Fitzpatrick99
             HAS_SPECUTILS = False
-        
+            
         Av = EBV*Rv
         if HAS_SPECUTILS:
             f99 = specutils.extinction.ExtinctionF99(EBV*Rv)
             self.Alambda = f99(self.wave*u.angstrom)
         else:
-            self.Alambda = milkyway_extinction(lamb=self.wave, Rv=Rv)*Av
+            f99 = Fitzpatrick99(Rv)
+            self.Alambda = f99(self.wave*u.angstrom, Av)
         
         self.Aflux = 10**(-0.4*self.Alambda)
         
@@ -48,11 +58,12 @@ class FilterDefinition:
         
         Optionally supply a source spectrum.
         """
+        import astropy.units as u
         try:
             import specutils.extinction
-            import astropy.units as u
             HAS_SPECUTILS = True
         except:
+            from extinction import Fitzpatrick99
             HAS_SPECUTILS = False
              
         if self.wave is None:
@@ -66,65 +77,85 @@ class FilterDefinition:
             
         Av = EBV*Rv
         if HAS_SPECUTILS:
-            f99 = specutils.extinction.ExtinctionF99(EBV*3.1)
             if (self.wave.min() < 910) | (self.wave.max() > 6.e4):
                 Alambda = 0.
             else:
+                f99 = specutils.extinction.ExtinctionF99(EBV*3.1)
                 Alambda = f99(self.wave*u.angstrom)
         else:
-            Alambda = milkyway_extinction(lamb = self.wave, Rv=Rv)*Av
-            
+            if (self.wave.min() < 910) | (self.wave.max() > 6.e4):
+                Alambda = 0.
+            else:
+                f99 = Fitzpatrick99(Rv)
+                Alambda = f99(self.wave*u.angstrom, Av)
+             
         delta = np.trapz(self.throughput*source_flux*10**(-0.4*Alambda), self.wave) / np.trapz(self.throughput*source_flux, self.wave)
         
         if mag:
             return 2.5*np.log10(delta)
         else:
             return 1./delta
-    
+        
     def ABVega(self):
         """
         Compute AB-Vega conversion
         """
-        try:
-            import pysynphot as S
-        except:
-            print('Failed to import "pysynphot"')
-            return False
+        from astropy.constants import c
+        import astropy.units as u
         
-        vega=S.FileSpectrum(S.locations.VegaFile)
-        abmag=S.FlatSpectrum(0,fluxunits='abmag')
-        #xy, yy = np.loadtxt('hawki_y_ETC.dat', unpack=True)
-        bp = S.ArrayBandpass(wave=self.wave, throughput=self.throughput, name='')
-        ovega = S.Observation(vega, bp)
-        oab = S.Observation(abmag, bp)
-        return -2.5*np.log10(ovega.integrate()/oab.integrate())
-    
+        # Union of throughput and Vega spectrum arrays
+        full_x = np.hstack([self.wave, VEGA['WAVELENGTH']])
+        full_x = full_x[np.argsort(full_x)]
+
+        # Vega spectrum, units of f-lambda flux density, cgs
+        # Interpolate to wavelength grid, no extrapolation
+        vega_full = np.interp(full_x, VEGA['WAVELENGTH'], VEGA['FLUX'], 
+                              left=0, right=0)
+                              
+        thru_full = np.interp(full_x, self.wave, self.throughput, 
+                              left=0, right=0)        
+        
+        # AB = 0, same units
+        absp = 3631*1e-23*c.to(u.m/u.s).value*1.e10/full_x**2
+        
+        # Integrate over the bandpass, flam dlam
+        num = np.trapz(vega_full*thru_full, full_x)
+        den = np.trapz(absp*thru_full, full_x)
+        
+        return -2.5*np.log10(num/den)
+        
+        
     def pivot(self):
         """
-        PySynphot pivot wavelength
-        """
-        try:
-            import pysynphot as S
-        except:
-            print('Failed to import "pysynphot"')
-            return False
-            
-        self.bp = S.ArrayBandpass(wave=self.wave, throughput=self.throughput, name='')
-        return self.bp.pivot()
+        Pivot wavelength
         
+        http://pysynphot.readthedocs.io/en/latest/properties.html
+        """
+        integrator = np.trapz
+        
+        num = integrator(self.wave, self.wave*self.throughput)
+        den = integrator(self.wave, self.throughput/self.wave)
+        pivot = np.sqrt(num/den)
+        return pivot
+        
+    def equivwidth(self):
+        """
+        Filter equivalent width
+
+        http://pysynphot.readthedocs.io/en/latest/properties.html
+        """
+        return np.trapz(self.throughput, self.wave)
+                
     def rectwidth(self):
         """
-        Synphot filter rectangular width
-        """
-        try:
-            import pysynphot as S
-        except:
-            print('Failed to import "pysynphot"')
-            return False
-            
-        self.bp = S.ArrayBandpass(wave=self.wave, throughput=self.throughput, name='')
-        return self.bp.rectwidth()
+        Filter rectangular width
 
+        http://pysynphot.readthedocs.io/en/latest/properties.html
+        """
+        
+        rect = self.equivwidth() / self.throughput.max()
+        return rect
+        
     def ctw95(self):
         """
         95% cumulative throughput width
