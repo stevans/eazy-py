@@ -1,6 +1,6 @@
 #data
-doc/example/*.fits
-doc/example/*.dat
+docs/examples/*.fits
+docs/exampless/*.dat
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
